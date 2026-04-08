@@ -38,34 +38,31 @@ def calculate_ema(prices: pd.Series, period: int = 50) -> pd.Series:
 
 
 def generate_signal(df: pd.DataFrame) -> dict:
-    """
-    Kombinierte Strategie: RSI + MACD + Bollinger Bands
-    Returns: dict mit 'signal' ('BUY'/'SELL'/'HOLD'), 'strength' (0-100), 'reasons'
-    """
     close = df['close']
-
-    # Indikatoren berechnen
     rsi = calculate_rsi(close)
     macd_line, signal_line, hist = calculate_macd(close)
     bb_upper, bb_mid, bb_lower = calculate_bollinger_bands(close)
     ema50 = calculate_ema(close, 50)
 
-    last = -1  # letzter Wert
-    prev = -2  # vorletzter Wert
+    rsi_val    = rsi.iloc[-1]
+    price      = close.iloc[-1]
+    macd_cur   = macd_line.iloc[-1]
+    macd_prev  = macd_line.iloc[-2]
+    sig_cur    = signal_line.iloc[-1]
+    sig_prev   = signal_line.iloc[-2]
 
-    rsi_val = rsi.iloc[last]
-    price = close.iloc[last]
-    macd_cross_up = (macd_line.iloc[prev] < signal_line.iloc[prev]) and (macd_line.iloc[last] > signal_line.iloc[last])
-    macd_cross_down = (macd_line.iloc[prev] > signal_line.iloc[prev]) and (macd_line.iloc[last] < signal_line.iloc[last])
-    bb_low = bb_lower.iloc[last]
-    bb_high = bb_upper.iloc[last]
-    ema_trend_up = price > ema50.iloc[last]
+    macd_cross_up   = macd_prev < sig_prev and macd_cur > sig_cur
+    macd_cross_down = macd_prev > sig_prev and macd_cur < sig_cur
+
+    bb_low  = bb_lower.iloc[-1]
+    bb_high = bb_upper.iloc[-1]
+    ema_val = ema50.iloc[-1]
 
     buy_score = 0
     sell_score = 0
     reasons = []
 
-    # RSI Signale
+    # RSI
     if rsi_val < 30:
         buy_score += 35
         reasons.append(f"RSI stark überverkauft ({rsi_val:.1f})")
@@ -79,39 +76,37 @@ def generate_signal(df: pd.DataFrame) -> dict:
         sell_score += 20
         reasons.append(f"RSI überkauft ({rsi_val:.1f})")
 
-    # MACD Signale
+    # MACD
     if macd_cross_up:
         buy_score += 30
         reasons.append("MACD bullisches Kreuz")
-    elif macd_line.iloc[last] > signal_line.iloc[last]:
+    elif macd_cur > sig_cur:
         buy_score += 10
-
     if macd_cross_down:
         sell_score += 30
         reasons.append("MACD bärisches Kreuz")
-    elif macd_line.iloc[last] < signal_line.iloc[last]:
+    elif macd_cur < sig_cur:
         sell_score += 10
 
     # Bollinger Bands
-    if price <= bb_low:
+    if pd.notna(bb_low) and price <= bb_low:
         buy_score += 25
-        reasons.append("Preis an unterem Bollinger Band")
-    elif price <= bb_low * 1.01:
+        reasons.append("Preis am unteren Bollinger Band")
+    elif pd.notna(bb_low) and price <= bb_low * 1.01:
         buy_score += 15
-
-    if price >= bb_high:
+    if pd.notna(bb_high) and price >= bb_high:
         sell_score += 25
-        reasons.append("Preis an oberem Bollinger Band")
-    elif price >= bb_high * 0.99:
+        reasons.append("Preis am oberen Bollinger Band")
+    elif pd.notna(bb_high) and price >= bb_high * 0.99:
         sell_score += 15
 
-    # Trend Filter (EMA50)
-    if ema_trend_up:
-        buy_score += 10
-    else:
-        sell_score += 10
+    # EMA Trend
+    if pd.notna(ema_val):
+        if price > ema_val:
+            buy_score += 10
+        else:
+            sell_score += 10
 
-    # Signal bestimmen
     if buy_score >= 55:
         signal = "BUY"
         strength = min(buy_score, 100)
@@ -126,33 +121,58 @@ def generate_signal(df: pd.DataFrame) -> dict:
         "signal": signal,
         "strength": strength,
         "reasons": reasons,
-        "rsi": round(rsi_val, 2),
-        "macd": round(macd_line.iloc[last], 4),
-        "macd_signal": round(signal_line.iloc[last], 4),
-        "bb_upper": round(bb_high, 4),
-        "bb_lower": round(bb_low, 4),
-        "ema50": round(ema50.iloc[last], 4),
-        "price": round(price, 4),
+        "rsi": round(float(rsi_val), 2),
+        "macd": round(float(macd_cur), 6),
+        "macd_signal": round(float(sig_cur), 6),
+        "bb_upper": round(float(bb_high), 4) if pd.notna(bb_high) else None,
+        "bb_lower": round(float(bb_low), 4) if pd.notna(bb_low) else None,
+        "ema50": round(float(ema_val), 4) if pd.notna(ema_val) else None,
+        "price": round(float(price), 4),
     }
 
 
 def get_chart_data(df: pd.DataFrame) -> dict:
-    """Gibt OHLCV + Indikatoren für Frontend zurück"""
+    """Gibt OHLCV + Indikatoren für das Frontend zurück"""
+    df = df.tail(120).copy().reset_index(drop=True)
     close = df['close']
-    rsi = calculate_rsi(close)
+
+    rsi       = calculate_rsi(close)
     macd_line, signal_line, histogram = calculate_macd(close)
     bb_upper, bb_mid, bb_lower = calculate_bollinger_bands(close)
 
-    timestamps = df['timestamp'].tolist() if 'timestamp' in df.columns else df.index.tolist()
+    def ts(t):
+        """Timestamp → Unix-Sekunden (int) für TradingView"""
+        try:
+            if isinstance(t, (int, float)):
+                return int(t)
+            ts_val = pd.Timestamp(t)
+            return int(ts_val.timestamp())
+        except Exception:
+            return None
+
+    timestamps = [ts(t) for t in df['timestamp']]
+
+    def safe_list(series):
+        return [round(float(v), 6) if pd.notna(v) else None for v in series]
+
+    ohlcv = []
+    for i, row in df.iterrows():
+        ohlcv.append({
+            "open":   round(float(row['open']), 6),
+            "high":   round(float(row['high']), 6),
+            "low":    round(float(row['low']), 6),
+            "close":  round(float(row['close']), 6),
+            "volume": round(float(row['volume']), 2),
+        })
 
     return {
-        "timestamps": [str(t) for t in timestamps[-100:]],
-        "ohlcv": df[['open', 'high', 'low', 'close', 'volume']].tail(100).to_dict('records'),
-        "rsi": rsi.tail(100).round(2).tolist(),
-        "macd": macd_line.tail(100).round(4).tolist(),
-        "macd_signal": signal_line.tail(100).round(4).tolist(),
-        "macd_hist": histogram.tail(100).round(4).tolist(),
-        "bb_upper": bb_upper.tail(100).round(4).tolist(),
-        "bb_mid": bb_mid.tail(100).round(4).tolist(),
-        "bb_lower": bb_lower.tail(100).round(4).tolist(),
+        "timestamps":   timestamps,
+        "ohlcv":        ohlcv,
+        "rsi":          safe_list(rsi),
+        "macd":         safe_list(macd_line),
+        "macd_signal":  safe_list(signal_line),
+        "macd_hist":    safe_list(histogram),
+        "bb_upper":     safe_list(bb_upper),
+        "bb_mid":       safe_list(bb_mid),
+        "bb_lower":     safe_list(bb_lower),
     }

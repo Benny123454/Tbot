@@ -779,7 +779,7 @@ function selectSymbol(symbol) {
   buildSymbolTabs();
   loadChart(symbol);
   loadSignal(symbol);
-  document.getElementById('signal-symbol').textContent = `Signal – ${symbol.replace('/USDT','')}`;
+  document.getElementById('signal-symbol').textContent = `Signal - ${NAMES[symbol] || symbol}`;
 }
 
 // ──────────────────────────────────────────
