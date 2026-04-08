@@ -70,6 +70,10 @@ STOCK_SYMBOLS = {
 DISPLAY_NAMES = {**CRYPTO_SYMBOLS, **STOCK_SYMBOLS}
 ALL_SYMBOLS   = list(CRYPTO_SYMBOLS.keys()) + list(STOCK_SYMBOLS.keys())
 
+# ── Daten-Cache (verhindert Rate-Limiting) ──────────────────────────────────
+_CACHE: dict = {}          # symbol → (timestamp, df)
+_CACHE_TTL = 600           # 10 Minuten Cache
+
 # ── Datenabruf ───────────────────────────────────────────────────────────────
 
 def fetch_df(symbol: str, days: int = 90) -> Optional[pd.DataFrame]:
@@ -108,8 +112,17 @@ def fetch_df(symbol: str, days: int = 90) -> Optional[pd.DataFrame]:
         return None
 
 
-def get_df(symbol: str) -> Optional[pd.DataFrame]:
-    return fetch_df(symbol)
+def get_df(symbol: str, use_cache: bool = True) -> Optional[pd.DataFrame]:
+    """Gibt gecachte Daten zurück wenn < 10 Min alt, sonst lädt neu"""
+    now = time.time()
+    if use_cache and symbol in _CACHE:
+        cached_ts, cached_df = _CACHE[symbol]
+        if now - cached_ts < _CACHE_TTL:
+            return cached_df
+    df = fetch_df(symbol)
+    if df is not None:
+        _CACHE[symbol] = (now, df)
+    return df
 
 
 def get_current_price(symbol: str) -> Optional[float]:
