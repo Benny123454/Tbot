@@ -739,7 +739,7 @@
 // State
 // ──────────────────────────────────────────
 let botRunning = false;
-let activeSymbol = 'BTC/USDT';
+let activeSymbol = 'BTC-USD';
 let priceChart = null;
 let candleSeries = null;
 let bbUpperSeries = null;
@@ -748,8 +748,9 @@ let bbMidSeries = null;
 let rsiChartInst = null;
 let macdChartInst = null;
 
-const CRYPTO = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT'];
-const STOCKS = ['AAPL', 'NVDA', 'MSFT', 'AMZN'];
+const CRYPTO = ['BTC-USD','ETH-USD','SOL-USD','XRP-USD','ADA-USD','DOGE-USD','AVAX-USD','LINK-USD','DOT-USD','LTC-USD'];
+const STOCKS = ['AAPL','NVDA','MSFT','AMZN','GOOGL','META','TSLA','AMD','NFLX','JPM'];
+const NAMES  = {'BTC-USD':'BTC','ETH-USD':'ETH','SOL-USD':'SOL','XRP-USD':'XRP','ADA-USD':'ADA','DOGE-USD':'DOGE','AVAX-USD':'AVAX','LINK-USD':'LINK','DOT-USD':'DOT','LTC-USD':'LTC','AAPL':'AAPL','NVDA':'NVDA','MSFT':'MSFT','AMZN':'AMZN','GOOGL':'GOOGL','META':'META','TSLA':'TSLA','AMD':'AMD','NFLX':'NFLX','JPM':'JPM'};
 
 // ──────────────────────────────────────────
 // Initialisierung
@@ -768,7 +769,7 @@ function buildSymbolTabs() {
   const container = document.getElementById('symbol-tabs');
   const all = [...CRYPTO, ...STOCKS];
   container.innerHTML = all.map(s => {
-    const label = s.replace('/USDT', '');
+    const label = NAMES[s] || s;
     const active = s === activeSymbol ? ' active' : '';
     return `<button class="symbol-tab${active}" onclick="selectSymbol('${s}')">${label}</button>`;
   }).join('');
