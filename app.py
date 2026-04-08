@@ -18,7 +18,12 @@ bot = TradingBot(mode="paper")
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    from flask import make_response
+    resp = make_response(render_template('index.html'))
+    # Browser-Cache deaktivieren damit neue JS-Version geladen wird
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    resp.headers['Pragma'] = 'no-cache'
+    return resp
 
 # ──────────────────────────────────────────
 # API Endpunkte
@@ -46,13 +51,12 @@ def api_reset():
 
 @app.route('/api/chart/<path:symbol>')
 def api_chart(symbol):
-    symbol = symbol.replace('-', '/')
+    # Kein Umwandeln – Symbole wie BTC-USD behalten ihr Bindestrich
     data = bot.get_chart(symbol)
     return jsonify(data)
 
 @app.route('/api/signal/<path:symbol>')
 def api_signal(symbol):
-    symbol = symbol.replace('-', '/')
     data = bot.get_signal(symbol)
     return jsonify(data)
 
