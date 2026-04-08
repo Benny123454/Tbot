@@ -1,7 +1,7 @@
 """
 Trading Engine – Paper Trading
-Krypto:  CoinGecko API  (kostenlos, keine Auth, funktioniert überall)
-Aktien:  yfinance mit User-Agent Fix
+Krypto:  Kraken Public API  (keine Auth, funktioniert von überall)
+Aktien:  Yahoo Finance v8   (direkt mit Cookie/Crumb, keine Auth)
 """
 import json
 import os
@@ -14,7 +14,6 @@ from typing import Optional
 import pandas as pd
 import numpy as np
 import requests
-import yfinance as yf
 
 from indicators import generate_signal, get_chart_data
 
@@ -23,29 +22,56 @@ logger = logging.getLogger(__name__)
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), 'data', 'portfolio.json')
 
-# ── Gemeinsame HTTP-Session mit Browser User-Agent ───────────────────────────
-_SESSION = requests.Session()
-_SESSION.headers.update({
+# ── Shared HTTP-Session ──────────────────────────────────────────────────────
+_HEADERS = {
     'User-Agent': (
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
         'AppleWebKit/537.36 (KHTML, like Gecko) '
         'Chrome/124.0.0.0 Safari/537.36'
     ),
-    'Accept': 'application/json',
-})
+    'Accept': '*/*',
+    'Referer': 'https://finance.yahoo.com',
+}
+_SESSION = requests.Session()
+_SESSION.headers.update(_HEADERS)
+_YF_CRUMB: Optional[str] = None
+_YF_CRUMB_LOCK = threading.Lock()
+
+
+def _get_yf_crumb() -> Optional[str]:
+    """Yahoo Finance Cookie + Crumb holen (wird gecacht)"""
+    global _YF_CRUMB
+    with _YF_CRUMB_LOCK:
+        if _YF_CRUMB:
+            return _YF_CRUMB
+        try:
+            _SESSION.get('https://finance.yahoo.com', timeout=10)
+            r = _SESSION.get(
+                'https://query2.finance.yahoo.com/v1/test/getcrumb',
+                timeout=10,
+            )
+            if r.status_code == 200 and r.text:
+                _YF_CRUMB = r.text.strip()
+                logger.info(f'Yahoo Crumb erhalten ({len(_YF_CRUMB)} Zeichen)')
+                return _YF_CRUMB
+        except Exception as e:
+            logger.warning(f'Yahoo Crumb Fehler: {e}')
+        return None
+
 
 # ── Symbol-Definitionen ──────────────────────────────────────────────────────
-CRYPTO_SYMBOLS = {
-    'BTC-USD':  'bitcoin',
-    'ETH-USD':  'ethereum',
-    'BNB-USD':  'binancecoin',
-    'SOL-USD':  'solana',
-    'XRP-USD':  'ripple',
-    'ADA-USD':  'cardano',
-    'DOGE-USD': 'dogecoin',
-    'AVAX-USD': 'avalanche-2',
-    'LINK-USD': 'chainlink',
-    'DOT-USD':  'polkadot',
+# Kraken-Pairs für Krypto
+KRAKEN_PAIRS = {
+    'BTC-USD':  'XBTUSD',
+    'ETH-USD':  'ETHUSD',
+    'SOL-USD':  'SOLUSD',
+    'XRP-USD':  'XRPUSD',
+    'ADA-USD':  'ADAUSD',
+    'DOGE-USD': 'DOGEUSD',
+    'AVAX-USD': 'AVAXUSD',
+    'LINK-USD': 'LINKUSD',
+    'DOT-USD':  'DOTUSD',
+    'POL-USD':  'POLUSD',
 }
 
 STOCK_SYMBOLS = {
@@ -62,14 +88,99 @@ STOCK_SYMBOLS = {
 }
 
 DISPLAY_NAMES = {
-    'BTC-USD':'Bitcoin','ETH-USD':'Ethereum','BNB-USD':'BNB',
-    'SOL-USD':'Solana','XRP-USD':'XRP','ADA-USD':'Cardano',
-    'DOGE-USD':'Dogecoin','AVAX-USD':'Avalanche','LINK-USD':'Chainlink',
-    'DOT-USD':'Polkadot',
+    'BTC-USD':'Bitcoin','ETH-USD':'Ethereum','SOL-USD':'Solana',
+    'XRP-USD':'XRP','ADA-USD':'Cardano','DOGE-USD':'Dogecoin',
+    'AVAX-USD':'Avalanche','LINK-USD':'Chainlink','DOT-USD':'Polkadot',
+    'MATIC-USD':'Polygon (POL)',
     **STOCK_SYMBOLS,
 }
 
-ALL_SYMBOLS = {**{k: k for k in CRYPTO_SYMBOLS}, **{k: k for k in STOCK_SYMBOLS}}
+ALL_SYMBOLS = list(KRAKEN_PAIRS.keys()) + list(STOCK_SYMBOLS.keys())
+
+
+# ── Datenabruf ───────────────────────────────────────────────────────────────
+
+def fetch_crypto_df(symbol: str) -> Optional[pd.DataFrame]:
+    """Kraken OHLCV – Public API, kein API-Key nötig"""
+    pair = KRAKEN_PAIRS.get(symbol)
+    if not pair:
+        return None
+    try:
+        r = requests.get(
+            'https://api.kraken.com/0/public/OHLC',
+            params={'pair': pair, 'interval': 240},  # 4h Kerzen
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get('error'):
+            logger.warning(f'Kraken Fehler {symbol}: {data["error"]}')
+            return None
+        ohlc = list(data['result'].values())[0]
+        df = pd.DataFrame(
+            ohlc,
+            columns=['timestamp','open','high','low','close','vwap','volume','count']
+        )
+        df['timestamp'] = pd.to_datetime(df['timestamp'].astype(int), unit='s')
+        for col in ['open','high','low','close','volume']:
+            df[col] = df[col].astype(float)
+        return df[['timestamp','open','high','low','close','volume']]
+    except Exception as e:
+        logger.warning(f'Kraken Fehler {symbol}: {e}')
+        return None
+
+
+def fetch_stock_df(symbol: str) -> Optional[pd.DataFrame]:
+    """Yahoo Finance v8 direkt – kein Auth nötig"""
+    end_ts = int(time.time())
+    start_ts = end_ts - 90 * 86400
+    try:
+        r = _SESSION.get(
+            f'https://query2.finance.yahoo.com/v8/finance/chart/{symbol}',
+            params={
+                'period1': start_ts,
+                'period2': end_ts,
+                'interval': '1d',
+                'includePrePost': 'False',
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+        result = data['chart']['result'][0]
+        timestamps = result['timestamp']   # Yahoo nutzt 'timestamp' (singular)
+        q = result['indicators']['quote'][0]
+        df = pd.DataFrame({
+            'timestamp': pd.to_datetime(timestamps, unit='s'),
+            'open':   [float(x) if x else None for x in q.get('open', [])],
+            'high':   [float(x) if x else None for x in q.get('high', [])],
+            'low':    [float(x) if x else None for x in q.get('low', [])],
+            'close':  [float(x) if x else None for x in q.get('close', [])],
+            'volume': [float(x) if x else 0 for x in q.get('volume', [])],
+        })
+        df = df.dropna(subset=['close'])
+        if df.empty:
+            return None
+        return df.reset_index(drop=True)
+    except Exception as e:
+        logger.warning(f'Yahoo Fehler {symbol}: {e}')
+        return None
+
+
+def get_df(symbol: str) -> Optional[pd.DataFrame]:
+    if symbol in KRAKEN_PAIRS:
+        return fetch_crypto_df(symbol)
+    return fetch_stock_df(symbol)
+
+
+def get_current_price(symbol: str) -> Optional[float]:
+    try:
+        df = get_df(symbol)
+        if df is not None and not df.empty:
+            return float(df['close'].iloc[-1])
+    except Exception as e:
+        logger.warning(f'Preisfehler {symbol}: {e}')
+    return None
 
 
 # ── Portfolio I/O ────────────────────────────────────────────────────────────
@@ -96,85 +207,6 @@ def save_portfolio(portfolio: dict):
         json.dump(portfolio, f, indent=2, default=str)
 
 
-# ── Datenabruf ───────────────────────────────────────────────────────────────
-
-def fetch_crypto_df(symbol: str) -> Optional[pd.DataFrame]:
-    """CoinGecko OHLC – kostenlos, keine Auth, 4h-Kerzen über 30 Tage"""
-    cg_id = CRYPTO_SYMBOLS.get(symbol)
-    if not cg_id:
-        return None
-    try:
-        url = f'https://api.coingecko.com/api/v3/coins/{cg_id}/ohlc'
-        resp = _SESSION.get(url, params={'vs_currency': 'usd', 'days': '30'}, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        if not data:
-            return None
-        df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df['volume'] = 0.0
-        return df
-    except Exception as e:
-        logger.warning(f'CoinGecko Fehler {symbol}: {e}')
-        return None
-
-
-def fetch_stock_df(symbol: str) -> Optional[pd.DataFrame]:
-    """yfinance – curl_cffi Session wird intern von yfinance verwaltet"""
-    try:
-        ticker = yf.Ticker(symbol)
-        raw = ticker.history(interval='1h', period='60d')
-        if raw is None or raw.empty:
-            # Fallback: kürzerer Zeitraum
-            ticker2 = yf.Ticker(symbol)
-            raw = ticker2.history(interval='1d', period='180d')
-        if raw is None or raw.empty:
-            logger.warning(f'Keine Daten für {symbol}')
-            return None
-        df = raw.reset_index()
-        df.columns = [c.lower() for c in df.columns]
-        for col in ['datetime', 'date']:
-            if col in df.columns:
-                df = df.rename(columns={col: 'timestamp'})
-                break
-        if 'timestamp' not in df.columns:
-            df['timestamp'] = df.index
-        # Timezone entfernen
-        try:
-            df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
-        except Exception:
-            df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_convert(None)
-        return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
-    except Exception as e:
-        logger.warning(f'yfinance Fehler {symbol}: {e}')
-        return None
-
-
-def get_df(symbol: str) -> Optional[pd.DataFrame]:
-    if symbol in CRYPTO_SYMBOLS:
-        return fetch_crypto_df(symbol)
-    return fetch_stock_df(symbol)
-
-
-def get_current_price(symbol: str) -> Optional[float]:
-    try:
-        if symbol in CRYPTO_SYMBOLS:
-            cg_id = CRYPTO_SYMBOLS[symbol]
-            r = _SESSION.get(
-                'https://api.coingecko.com/api/v3/simple/price',
-                params={'ids': cg_id, 'vs_currencies': 'usd'},
-                timeout=10,
-            )
-            r.raise_for_status()
-            return float(r.json()[cg_id]['usd'])
-        else:
-            t = yf.Ticker(symbol)
-            return float(t.fast_info.last_price)
-    except Exception as e:
-        logger.warning(f'Preisfehler {symbol}: {e}')
-        return None
-
-
 # ── TradingBot ───────────────────────────────────────────────────────────────
 
 class TradingBot:
@@ -192,8 +224,6 @@ class TradingBot:
         self.last_scan = None
         self.log_entries = []
 
-    # ── Trade-Ausführung ────────────────────────────────────────────────────
-
     def _buy(self, symbol: str, price: float, signal_info: dict):
         with self._lock:
             if len(self.portfolio['positions']) >= self.MAX_POSITIONS:
@@ -206,19 +236,19 @@ class TradingBot:
             qty = invest / price
             self.portfolio['balance'] -= invest
             self.portfolio['positions'][symbol] = {
-                'symbol':            symbol,
-                'name':              DISPLAY_NAMES.get(symbol, symbol),
-                'qty':               qty,
-                'entry_price':       price,
-                'current_price':     price,
-                'invested':          invest,
-                'stop_loss':         price * (1 - self.STOP_LOSS_PCT),
-                'take_profit':       price * (1 + self.TAKE_PROFIT_PCT),
-                'unrealized_pnl':    0,
+                'symbol':             symbol,
+                'name':               DISPLAY_NAMES.get(symbol, symbol),
+                'qty':                qty,
+                'entry_price':        price,
+                'current_price':      price,
+                'invested':           invest,
+                'stop_loss':          price * (1 - self.STOP_LOSS_PCT),
+                'take_profit':        price * (1 + self.TAKE_PROFIT_PCT),
+                'unrealized_pnl':     0,
                 'unrealized_pnl_pct': 0,
-                'opened_at':         datetime.now(timezone.utc).isoformat(),
-                'signal_strength':   signal_info.get('strength', 0),
-                'reasons':           signal_info.get('reasons', []),
+                'opened_at':          datetime.now(timezone.utc).isoformat(),
+                'signal_strength':    signal_info.get('strength', 0),
+                'reasons':            signal_info.get('reasons', []),
             }
             self.portfolio['trades'].insert(0, {
                 'id':        len(self.portfolio['trades']) + 1,
@@ -239,9 +269,9 @@ class TradingBot:
             if symbol not in self.portfolio['positions']:
                 return
             pos = self.portfolio['positions'].pop(symbol)
-            proceeds  = pos['qty'] * price
-            pnl       = proceeds - pos['invested']
-            pnl_pct   = (pnl / pos['invested']) * 100
+            proceeds = pos['qty'] * price
+            pnl      = proceeds - pos['invested']
+            pnl_pct  = (pnl / pos['invested']) * 100
             self.portfolio['balance'] += proceeds
             self.portfolio['trades'].insert(0, {
                 'id':        len(self.portfolio['trades']) + 1,
@@ -260,20 +290,16 @@ class TradingBot:
             icon = '🟢' if pnl >= 0 else '🔴'
             self._log(f'{icon} VERKAUF {symbol} @ {price:.4f} | PnL: {pnl:+.2f}€ ({pnl_pct:+.1f}%) | {reason}')
 
-    # ── Hauptschleife ────────────────────────────────────────────────────────
-
     def _process_symbol(self, symbol: str):
         df = get_df(symbol)
-        if df is None or len(df) < 50:
+        if df is None or len(df) < 30:
             return
         signal_info = generate_signal(df)
         price = signal_info.get('price', 0)
         if not price or price <= 0:
             return
-
         with self._lock:
             pos = self.portfolio['positions'].get(symbol)
-
         if pos:
             if price <= pos['stop_loss']:
                 self._sell(symbol, price, 'Stop Loss')
@@ -286,22 +312,22 @@ class TradingBot:
                 self._buy(symbol, price, signal_info)
 
     def _run(self):
-        symbols = list(ALL_SYMBOLS.keys())
+        # Crumb beim Start holen
+        _get_yf_crumb()
         while self.running:
-            self._log(f'🔍 Scanning {len(symbols)} Assets...')
-            for symbol in symbols:
+            self._log(f'🔍 Scanning {len(ALL_SYMBOLS)} Assets...')
+            for symbol in ALL_SYMBOLS:
                 if not self.running:
                     break
                 try:
                     self._process_symbol(symbol)
                 except Exception as e:
                     logger.error(f'Fehler bei {symbol}: {e}')
-                time.sleep(2)   # kurze Pause zwischen Symbolen
+                time.sleep(2)
 
             self.last_scan = datetime.now(timezone.utc).isoformat()
             self._update_pnl()
 
-            # 5 Minuten warten
             for _ in range(300):
                 if not self.running:
                     break
@@ -330,8 +356,6 @@ class TradingBot:
         self.log_entries = self.log_entries[:100]
         logger.info(msg)
 
-    # ── Steuerung ────────────────────────────────────────────────────────────
-
     def start(self):
         if self.running:
             return
@@ -355,12 +379,9 @@ class TradingBot:
         save_portfolio(self.portfolio)
         self._log('🔄 Portfolio zurückgesetzt')
 
-    # ── API ──────────────────────────────────────────────────────────────────
-
     def get_status(self) -> dict:
         with self._lock:
             portfolio = json.loads(json.dumps(self.portfolio, default=str))
-
         balance         = portfolio['balance']
         positions       = portfolio.get('positions', {})
         trades          = portfolio.get('trades', [])
@@ -368,17 +389,15 @@ class TradingBot:
             p.get('current_price', p['entry_price']) * p['qty']
             for p in positions.values()
         )
-        total_value  = balance + positions_value
-        initial      = portfolio['initial_balance']
-        total_pnl    = total_value - initial
+        total_value   = balance + positions_value
+        initial       = portfolio['initial_balance']
+        total_pnl     = total_value - initial
         total_pnl_pct = (total_pnl / initial) * 100
-
-        closed   = [t for t in trades if t['type'] == 'SELL']
-        win_rate = 0
+        closed        = [t for t in trades if t['type'] == 'SELL']
+        win_rate      = 0
         if closed:
             wins     = sum(1 for t in closed if t.get('pnl', 0) >= 0)
             win_rate = round((wins / len(closed)) * 100, 1)
-
         return {
             'running':         self.running,
             'mode':            self.mode,
