@@ -319,7 +319,21 @@ class TradingBot:
         self.running = True
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        # Separater Thread: PnL jede Minute aktualisieren
+        self._pnl_thread = threading.Thread(target=self._pnl_loop, daemon=True)
+        self._pnl_thread.start()
         self._log('✅ Bot gestartet')
+
+    def _pnl_loop(self):
+        """Aktualisiert Preise und PnL jede Minute für offene Positionen"""
+        while self.running:
+            time.sleep(60)
+            if not self.running:
+                break
+            try:
+                self._update_pnl()
+            except Exception:
+                pass
 
     def stop(self):
         self.running = False
@@ -339,13 +353,21 @@ class TradingBot:
     def get_status(self) -> dict:
         with self._lock:
             portfolio = json.loads(json.dumps(self.portfolio, default=str))
-        balance         = portfolio['balance']
-        positions       = portfolio.get('positions', {})
-        trades          = portfolio.get('trades', [])
-        positions_value = sum(
-            p.get('current_price', p['entry_price']) * p['qty']
-            for p in positions.values()
-        )
+        balance   = portfolio['balance']
+        positions = portfolio.get('positions', {})
+        trades    = portfolio.get('trades', [])
+
+        # PnL mit frischestem Cache-Preis berechnen
+        now = time.time()
+        positions_value = 0.0
+        for sym, pos in positions.items():
+            cached = _CACHE.get(sym)
+            if cached and (now - cached[0]) < 600:   # max 10 Min alt
+                live_price = float(cached[1]['close'].iloc[-1])
+                pos['current_price']      = round(live_price, 4)
+                pos['unrealized_pnl']     = round((live_price - pos['entry_price']) * pos['qty'], 2)
+                pos['unrealized_pnl_pct'] = round(((live_price / pos['entry_price']) - 1) * 100, 2)
+            positions_value += pos.get('current_price', pos['entry_price']) * pos['qty']
         total_value   = balance + positions_value
         initial       = portfolio['initial_balance']
         total_pnl     = total_value - initial

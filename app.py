@@ -76,9 +76,22 @@ def api_config():
         bot.TAKE_PROFIT_PCT = float(data['take_profit']) / 100
     if 'position_size' in data:
         bot.MAX_POSITION_PCT = float(data['position_size']) / 100
-    return jsonify({"ok": True, "config": {
-        "stop_loss": round(bot.STOP_LOSS_PCT * 100, 1),
-        "take_profit": round(bot.TAKE_PROFIT_PCT * 100, 1),
+
+    # SL/TP bei allen offenen Positionen sofort aktualisieren
+    updated = 0
+    with bot._lock:
+        for symbol, pos in bot.portfolio['positions'].items():
+            entry = pos['entry_price']
+            pos['stop_loss']   = round(entry * (1 - bot.STOP_LOSS_PCT), 6)
+            pos['take_profit'] = round(entry * (1 + bot.TAKE_PROFIT_PCT), 6)
+            updated += 1
+    if updated:
+        from bot import save_portfolio
+        save_portfolio(bot.portfolio)
+
+    return jsonify({"ok": True, "updated_positions": updated, "config": {
+        "stop_loss":     round(bot.STOP_LOSS_PCT * 100, 1),
+        "take_profit":   round(bot.TAKE_PROFIT_PCT * 100, 1),
         "position_size": round(bot.MAX_POSITION_PCT * 100, 1),
     }})
 
