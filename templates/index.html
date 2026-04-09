@@ -529,6 +529,7 @@
   <div class="header-left">
     <span class="logo">⚡ TradingBot Pro</span>
     <span class="mode-badge">Paper Trading</span>
+    <span id="live-indicator" style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><span id="live-dot" style="width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;display:inline-block"></span>Live</span>
   </div>
   <div class="header-right">
     <button class="btn-reset" onclick="resetPortfolio()">↺ Reset</button>
@@ -687,7 +688,7 @@
     </div>
   </div>
 
-  <div class="last-updated">Letzte Aktualisierung: <span id="last-update-time">—</span></div>
+  <div class="last-updated" style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:8px;"><span style="font-size:11px;color:var(--muted)">Auto-Refresh alle 5s</span><span style="color:var(--border)">|</span>Letzte Aktualisierung: <span id="last-update-time" style="color:var(--blue)">—</span></div>
 </main>
 
 <!-- Settings Modal -->
@@ -761,8 +762,8 @@ document.addEventListener('DOMContentLoaded', () => {
   loadChart(activeSymbol);
   loadSignal(activeSymbol);
   refreshStatus();
-  setInterval(refreshStatus, 10000);
-  setInterval(() => { loadSignal(activeSymbol); }, 30000);
+  setInterval(refreshStatus, 5000);
+  setInterval(() => { loadSignal(activeSymbol); }, 15000);
 });
 
 function buildSymbolTabs() {
@@ -1039,6 +1040,9 @@ async function refreshStatus() {
     renderLogs(d.logs || []);
 
     setText('last-update-time', new Date().toLocaleTimeString('de-DE'));
+    // Kurzer Flash-Effekt auf dem Live-Dot
+    const dot = document.getElementById('live-dot');
+    if (dot) { dot.style.background = 'var(--blue)'; setTimeout(() => { dot.style.background = 'var(--green)'; }, 300); }
   } catch (e) {
     console.error('Status Fehler:', e);
   }
