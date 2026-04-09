@@ -107,15 +107,15 @@ def generate_signal(df: pd.DataFrame) -> dict:
         else:
             sell_score += 10
 
-    if buy_score >= 55:
+    if buy_score >= 45:
         signal = "BUY"
         strength = min(buy_score, 100)
-    elif sell_score >= 55:
+    elif sell_score >= 45:
         signal = "SELL"
         strength = min(sell_score, 100)
     else:
         signal = "HOLD"
-        strength = 0
+        strength = max(buy_score, sell_score)  # Zeigt wie nah wir am Signal sind
 
     return {
         "signal": signal,

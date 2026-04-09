@@ -72,12 +72,12 @@ ALL_SYMBOLS   = list(CRYPTO_SYMBOLS.keys()) + list(STOCK_SYMBOLS.keys())
 
 # ── Daten-Cache (verhindert Rate-Limiting) ──────────────────────────────────
 _CACHE: dict = {}          # symbol → (timestamp, df)
-_CACHE_TTL = 600           # 10 Minuten Cache
+_CACHE_TTL = 300           # 5 Minuten Cache (passt zu 1h-Kerzen)
 
 # ── Datenabruf ───────────────────────────────────────────────────────────────
 
-def fetch_df(symbol: str, days: int = 90) -> Optional[pd.DataFrame]:
-    """Yahoo Finance v8 – funktioniert für Krypto (BTC-USD) + Aktien (AAPL)"""
+def fetch_df(symbol: str, days: int = 60) -> Optional[pd.DataFrame]:
+    """Yahoo Finance v8 – 1h-Kerzen für Krypto + Aktien"""
     end_ts   = int(time.time())
     start_ts = end_ts - days * 86400
     try:
@@ -86,7 +86,7 @@ def fetch_df(symbol: str, days: int = 90) -> Optional[pd.DataFrame]:
             params={
                 'period1':       start_ts,
                 'period2':       end_ts,
-                'interval':      '1d',
+                'interval':      '1h',    # Stündliche Kerzen statt täglich
                 'includePrePost': 'False',
             },
             timeout=15,
