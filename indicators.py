@@ -107,7 +107,8 @@ def generate_signal(df: pd.DataFrame) -> dict:
         else:
             sell_score += 10
 
-    if buy_score >= 45:
+    # Asymmetrisch: Kaufen bei niedrigerem Score (Einstieg), Verkaufen bei höherem (Ausstieg)
+    if buy_score >= 35:
         signal = "BUY"
         strength = min(buy_score, 100)
     elif sell_score >= 45:
@@ -115,7 +116,7 @@ def generate_signal(df: pd.DataFrame) -> dict:
         strength = min(sell_score, 100)
     else:
         signal = "HOLD"
-        strength = max(buy_score, sell_score)  # Zeigt wie nah wir am Signal sind
+        strength = max(buy_score, sell_score)
 
     return {
         "signal": signal,
